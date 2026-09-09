@@ -54,6 +54,8 @@ jobs:
 
       - name: Build EXE with PyInstaller
         shell: pwsh
+        env:
+          KIVY_GL_BACKEND: angle_sdl2
         run: |
           cd build_src
           pyinstaller --onefile --noconsole --name "${{ github.event.inputs.app_name }}" "${{ github.event.inputs.entry_file }}"
