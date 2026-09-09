@@ -1,0 +1,59 @@
+name: Clean source and output folders
+
+on:
+  workflow_dispatch:
+    inputs:
+      clean_source:
+        description: 'Delete everything currently in source/ ?'
+        type: boolean
+        default: true
+      clean_output:
+        description: 'Delete everything currently in output/ ?'
+        type: boolean
+        default: false
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Clean source/ folder
+        if: ${{ github.event.inputs.clean_source == 'true' }}
+        run: |
+          mkdir -p source
+          find source -mindepth 1 ! -name ".gitkeep" -exec rm -rf {} +
+          touch source/.gitkeep
+          echo "source/ has been emptied."
+
+      - name: Clean output/ folder
+        if: ${{ github.event.inputs.clean_output == 'true' }}
+        run: |
+          mkdir -p output
+          find output -mindepth 1 ! -name ".gitkeep" -exec rm -rf {} +
+          touch output/.gitkeep
+          echo "output/ has been emptied."
+
+      - name: Commit and push the cleanup
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add source/ output/
+          if git diff --cached --quiet; then
+            echo "Nothing changed -- folders were already empty."
+          else
+            git commit -m "Clean folders via manual workflow run (#${{ github.run_number }})"
+            git pull --rebase origin main
+            git push
+          fi
+
+      - name: Summary
+        run: |
+          echo "### Cleanup finished" >> "$GITHUB_STEP_SUMMARY"
+          echo "- source/ cleaned: ${{ github.event.inputs.clean_source }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- output/ cleaned: ${{ github.event.inputs.clean_output }}" >> "$GITHUB_STEP_SUMMARY"
