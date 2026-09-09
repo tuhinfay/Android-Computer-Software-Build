@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+source/source.zip
+output/*.exe
+output/*.apk
+.buildozer/
+bin/
+dist/
+build/
