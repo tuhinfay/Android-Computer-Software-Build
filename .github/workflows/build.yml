@@ -160,7 +160,7 @@ jobs:
           path: dist_out/*.exe
 
   build-android:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     outputs:
       built: ${{ steps.verify.outputs.built }}
     steps:
