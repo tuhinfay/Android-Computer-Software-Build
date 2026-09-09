@@ -1,4 +1,4 @@
-name: Build PC EXE and Android APK
+name: Build PC EXE and Android APK (multi-language, auto-skip, HTML support)
 
 on:
   workflow_dispatch:
@@ -8,74 +8,161 @@ on:
         required: false
         default: 'MyApp'
       entry_file:
-        description: 'Main python entry file'
+        description: 'Main python entry file (Python projects only)'
         required: false
         default: 'main.py'
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    outputs:
+      built: ${{ steps.verify.outputs.built }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
+      - name: Prepare build source (zip OR loose files)
+        shell: bash
+        run: |
+          mkdir -p build_src
+          ZIP_COUNT=$(find source -maxdepth 1 -iname "*.zip" | wc -l)
+          if [ "$ZIP_COUNT" -eq 1 ]; then
+            ZIP_FILE=$(find source -maxdepth 1 -iname "*.zip")
+            unzip -o "$ZIP_FILE" -d build_src
+          else
+            find source -mindepth 1 -maxdepth 1 ! -name ".gitkeep" -exec cp -r {} build_src/ \;
+          fi
+          echo "Files found in build_src:"
+          find build_src -maxdepth 2
+
+      - name: Detect project type
+        id: detect
+        shell: bash
+        run: |
+          cd build_src
+          if find . -maxdepth 3 -iname "*.csproj" | grep -q .; then
+            echo "type=dotnet" >> "$GITHUB_OUTPUT"
+          elif [ -f CMakeLists.txt ]; then
+            echo "type=cmake" >> "$GITHUB_OUTPUT"
+          elif [ -f requirements.txt ] || [ -f main.py ]; then
+            echo "type=python" >> "$GITHUB_OUTPUT"
+          elif [ -f index.html ]; then
+            echo "type=html" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=unknown" >> "$GITHUB_OUTPUT"
+            echo "No supported PC project type found in source/ -- skipping Windows build without failing the run."
+          fi
+
       - name: Set up Python
+        if: steps.detect.outputs.type == 'python'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Prepare build source (zip OR loose files)
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path build_src | Out-Null
-          $zips = Get-ChildItem -Path "source" -Filter "*.zip" -File -ErrorAction SilentlyContinue
-          if ($zips.Count -eq 1) {
-            Write-Host "Found a single zip: $($zips[0].Name) -> extracting"
-            Expand-Archive -Path $zips[0].FullName -DestinationPath build_src -Force
-          } else {
-            Write-Host "No single zip found -> copying loose files from source/ as-is"
-            Copy-Item -Path "source/*" -Destination "build_src" -Recurse -Force -Exclude ".gitkeep"
-          }
-          $entry = "${{ github.event.inputs.entry_file }}"
-          if (-not (Test-Path "build_src/$entry")) {
-            Write-Host "ERROR: entry file '$entry' was not found inside source/. Aborting before wasting build time."
-            Get-ChildItem -Recurse build_src | Select-Object -First 30
-            exit 1
-          }
-          Write-Host "Source OK. Files found:"
-          Get-ChildItem -Recurse build_src | Select-Object -First 30
+      - name: Set up Node.js
+        if: steps.detect.outputs.type == 'html'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-      - name: Install dependencies
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          if (Test-Path "build_src/requirements.txt") { pip install -r build_src/requirements.txt } else { Write-Host "No requirements.txt found, skipping." }
-          pip install pyinstaller
+      - name: Set up .NET
+        if: steps.detect.outputs.type == 'dotnet'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
 
-      - name: Build EXE with PyInstaller
+      - name: Build with PyInstaller (Python)
+        if: steps.detect.outputs.type == 'python'
         shell: pwsh
         env:
           KIVY_GL_BACKEND: angle_sdl2
         run: |
           cd build_src
+          python -m pip install --upgrade pip
+          if (Test-Path "requirements.txt") { pip install -r requirements.txt }
+          pip install pyinstaller
           pyinstaller --onefile --noconsole --name "${{ github.event.inputs.app_name }}" "${{ github.event.inputs.entry_file }}"
+          New-Item -ItemType Directory -Force -Path ..\dist_out | Out-Null
+          Copy-Item "dist\*.exe" ..\dist_out\
 
-      - name: Verify EXE was produced
-        shell: pwsh
+      - name: Build with dotnet publish (.NET/C#)
+        if: steps.detect.outputs.type == 'dotnet'
+        shell: bash
         run: |
-          if (-not (Test-Path "build_src/dist/*.exe")) {
-            Write-Host "ERROR: no .exe was produced. Check the PyInstaller log above."
-            exit 1
+          cd build_src
+          PROJECT=$(find . -maxdepth 3 -iname "*.csproj" | head -n 1)
+          dotnet publish "$PROJECT" -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o ../dist_out
+
+      - name: Build with CMake (C/C++)
+        if: steps.detect.outputs.type == 'cmake'
+        shell: bash
+        run: |
+          cd build_src
+          cmake -B cmake_build -S .
+          cmake --build cmake_build --config Release
+          mkdir -p ../dist_out
+          find cmake_build -iname "*.exe" -exec cp {} ../dist_out/ \;
+
+      - name: Build EXE with Electron (HTML/web project)
+        if: steps.detect.outputs.type == 'html'
+        shell: bash
+        run: |
+          cd build_src
+          cat > electron-main.js <<'EOF'
+          const { app, BrowserWindow } = require('electron');
+          const path = require('path');
+          function createWindow() {
+            const win = new BrowserWindow({ width: 1100, height: 750 });
+            win.loadFile(path.join(__dirname, 'index.html'));
           }
+          app.whenReady().then(createWindow);
+          app.on('window-all-closed', () => app.quit());
+          EOF
+          cat > package.json <<EOF
+          {
+            "name": "webapp",
+            "version": "1.0.0",
+            "main": "electron-main.js",
+            "build": {
+              "appId": "org.appbuilder.webapp",
+              "productName": "${{ github.event.inputs.app_name }}",
+              "win": { "target": "portable" },
+              "files": ["**/*", "!node_modules/electron-builder/**"]
+            }
+          }
+          EOF
+          npm install --no-save electron@28 electron-builder@24
+          npx electron-builder --win portable --x64
+          mkdir -p ../dist_out
+          find dist -iname "*.exe" -exec cp {} ../dist_out/ \;
+
+      - name: Verify build output (non-fatal skip vs real failure)
+        id: verify
+        shell: bash
+        run: |
+          if [ "${{ steps.detect.outputs.type }}" == "unknown" ]; then
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -n "$(find dist_out -iname '*.exe' 2>/dev/null)" ]; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            echo "ERROR: a project type was detected (${{ steps.detect.outputs.type }}) but no .exe was produced."
+            exit 1
+          fi
 
       - name: Upload EXE artifact
+        if: steps.verify.outputs.built == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: windows-exe
-          path: build_src/dist/*.exe
+          path: dist_out/*.exe
 
   build-android:
     runs-on: ubuntu-latest
+    outputs:
+      built: ${{ steps.verify.outputs.built }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -86,92 +173,153 @@ jobs:
           ZIP_COUNT=$(find source -maxdepth 1 -iname "*.zip" | wc -l)
           if [ "$ZIP_COUNT" -eq 1 ]; then
             ZIP_FILE=$(find source -maxdepth 1 -iname "*.zip")
-            echo "Found a single zip: $ZIP_FILE -> extracting"
             unzip -o "$ZIP_FILE" -d build_src
           else
-            echo "No single zip found -> copying loose files from source/ as-is"
             find source -mindepth 1 -maxdepth 1 ! -name ".gitkeep" -exec cp -r {} build_src/ \;
           fi
-          ENTRY="${{ github.event.inputs.entry_file }}"
-          if [ ! -f "build_src/$ENTRY" ]; then
-            echo "ERROR: entry file '$ENTRY' was not found inside source/. Aborting before wasting build time."
-            find build_src -maxdepth 2
-            exit 1
-          fi
-          echo "Source OK. Files found:"
+          echo "Files found in build_src:"
           find build_src -maxdepth 2
 
-      - name: Ensure buildozer.spec exists
+      - name: Detect project type
+        id: detect
+        run: |
+          cd build_src
+          if [ -f gradlew ] && ( [ -f settings.gradle ] || [ -f settings.gradle.kts ] ); then
+            echo "type=gradle" >> "$GITHUB_OUTPUT"
+          elif [ -f requirements.txt ] || [ -f main.py ]; then
+            echo "type=python" >> "$GITHUB_OUTPUT"
+          elif [ -f index.html ]; then
+            echo "type=html" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=unknown" >> "$GITHUB_OUTPUT"
+            echo "No supported Android project type found in source/ -- skipping Android build without failing the run."
+          fi
+
+      - name: Ensure buildozer.spec exists (Python only)
+        if: steps.detect.outputs.type == 'python'
         run: |
           if [ ! -f build_src/buildozer.spec ]; then
-            echo "No buildozer.spec found -> using default template"
             cp buildozer.spec.default build_src/buildozer.spec
             sed -i "s/title = MyApp/title = ${{ github.event.inputs.app_name }}/" build_src/buildozer.spec
           fi
 
+      - name: Set up Java
+        if: steps.detect.outputs.type == 'gradle' || steps.detect.outputs.type == 'python' || steps.detect.outputs.type == 'html'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - name: Set up Python
+        if: steps.detect.outputs.type == 'python'
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install system dependencies (Java from default Ubuntu repo, no PPA)
+      - name: Set up Node.js
+        if: steps.detect.outputs.type == 'html'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install system dependencies (Python/Buildozer path)
+        if: steps.detect.outputs.type == 'python'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            openjdk-17-jdk \
             build-essential git zip unzip autoconf libtool pkg-config \
             zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
             cmake libffi-dev libssl-dev automake
 
-      - name: Install Buildozer
+      - name: Install Buildozer (Python path)
+        if: steps.detect.outputs.type == 'python'
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade buildozer cython==0.29.33
 
-      - name: Build APK with Buildozer
+      - name: Build APK with Buildozer (Python path)
+        if: steps.detect.outputs.type == 'python'
         run: |
           cd build_src
           yes | buildozer -v android debug
 
-      - name: Locate built APK
-        id: locate
+      - name: Build APK with Gradle (Android Studio path)
+        if: steps.detect.outputs.type == 'gradle'
         run: |
-          APK_PATH=$(find build_src/bin -name "*.apk" | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            echo "ERROR: Buildozer did not produce an APK. Check the log above."
+          cd build_src
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Build APK from HTML with Capacitor (HTML/web path)
+        if: steps.detect.outputs.type == 'html'
+        run: |
+          cd build_src
+          mkdir -p www
+          for f in *; do
+            [ "$f" = "www" ] && continue
+            cp -r "$f" www/
+          done
+          npm init -y
+          npm install --no-save @capacitor/core@5 @capacitor/cli@5 @capacitor/android@5
+          npx cap init webapp org.appbuilder.webapp --web-dir=www
+          npx cap add android
+          npx cap sync android
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Verify build output (non-fatal skip vs real failure)
+        id: verify
+        run: |
+          if [ "${{ steps.detect.outputs.type }}" == "unknown" ]; then
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          APK_PATH=$(find build_src -iname "*.apk" | head -n 1)
+          if [ -n "$APK_PATH" ]; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+            echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            echo "ERROR: a project type was detected (${{ steps.detect.outputs.type }}) but no .apk was produced."
             exit 1
           fi
-          echo "Found APK: $APK_PATH"
-          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Upload APK artifact
+        if: steps.verify.outputs.built == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: ${{ steps.locate.outputs.apk_path }}
+          path: ${{ steps.verify.outputs.apk_path }}
 
   release:
     needs: [build-windows, build-android]
+    if: always()
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Download EXE artifact
+        if: needs.build-windows.outputs.built == 'true'
         uses: actions/download-artifact@v4
         with:
           name: windows-exe
           path: dist/windows
 
       - name: Download APK artifact
+        if: needs.build-android.outputs.built == 'true'
         uses: actions/download-artifact@v4
         with:
           name: android-apk
           path: dist/android
 
-      - name: Create Release with build outputs
+      - name: Create Release with whatever was built
+        if: needs.build-windows.outputs.built == 'true' || needs.build-android.outputs.built == 'true'
         uses: softprops/action-gh-release@v1
         with:
           tag_name: build-${{ github.run_number }}
@@ -181,3 +329,33 @@ jobs:
             dist/android/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Copy built files into output/ folder
+        if: needs.build-windows.outputs.built == 'true' || needs.build-android.outputs.built == 'true'
+        run: |
+          mkdir -p output
+          find output -maxdepth 1 -iname "*.exe" -delete
+          find output -maxdepth 1 -iname "*.apk" -delete
+          [ -d dist/windows ] && find dist/windows -iname "*.exe" -exec cp {} output/ \; || true
+          [ -d dist/android ] && find dist/android -iname "*.apk" -exec cp {} output/ \; || true
+          touch output/.gitkeep
+
+      - name: Commit output/ back to the repo
+        if: needs.build-windows.outputs.built == 'true' || needs.build-android.outputs.built == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add output/
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Update output/ with build #${{ github.run_number }}"
+            git pull --rebase origin main
+            git push
+          fi
+
+      - name: Report nothing was built
+        if: needs.build-windows.outputs.built != 'true' && needs.build-android.outputs.built != 'true'
+        run: |
+          echo "Neither a Windows EXE nor an Android APK was produced -- no recognized project type was found in source/."
+          exit 1
