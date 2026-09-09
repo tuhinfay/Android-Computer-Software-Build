@@ -1,1 +1,0 @@
-flask\nrequests\npython-dotenv\n
