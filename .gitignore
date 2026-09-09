@@ -2,8 +2,7 @@ __pycache__/
 *.pyc
 .env
 source/source.zip
-output/*.exe
-output/*.apk
+node_modules/
 .buildozer/
 bin/
 dist/
