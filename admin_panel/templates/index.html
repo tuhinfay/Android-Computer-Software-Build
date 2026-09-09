@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>App Builder Admin Panel</title>
+<style>
+body{font-family:Arial,sans-serif;max-width:600px;margin:40px auto;padding:0 20px;background:#f5f5f7;}
+h1{color:#222;}
+form{background:#fff;padding:24px;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.1);}
+label{display:block;margin-top:14px;font-weight:600;}
+input[type=text]{width:100%;padding:8px;margin-top:4px;box-sizing:border-box;}
+input[type=file]{margin-top:6px;}
+button{margin-top:20px;background:#2563eb;color:#fff;border:none;padding:10px 20px;border-radius:6px;cursor:pointer;font-size:15px;}
+button:hover{background:#1d4ed8;}
+.flash{background:#fef3c7;padding:10px;border-radius:6px;margin-bottom:14px;}
+a.status-link{display:inline-block;margin-top:16px;}
+</style>
+</head>
+<body>
+<h1>PC (.exe) + Android (.apk) App Builder</h1>
+{% with messages = get_flashed_messages() %}
+  {% if messages %}
+    {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+  {% endif %}
+{% endwith %}
+<form action="/upload" method="post" enctype="multipart/form-data">
+  <label>Source code ZIP (must contain main.py, requirements.txt, optional buildozer.spec)</label>
+  <input type="file" name="source_zip" accept=".zip" required>
+
+  <label>App name</label>
+  <input type="text" name="app_name" placeholder="MyApp" value="MyApp">
+
+  <label>Entry file</label>
+  <input type="text" name="entry_file" placeholder="main.py" value="main.py">
+
+  <button type="submit">Upload &amp; Build</button>
+</form>
+<a class="status-link" href="/status">Check build status →</a>
+</body>
+</html>

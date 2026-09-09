@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Build Status</title>
+<meta http-equiv="refresh" content="15">
+<style>
+body{font-family:Arial,sans-serif;max-width:600px;margin:40px auto;padding:0 20px;background:#f5f5f7;}
+.card{background:#fff;padding:20px;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,.1);margin-bottom:16px;}
+.badge{display:inline-block;padding:4px 10px;border-radius:12px;font-size:13px;color:#fff;}
+.queued{background:#f59e0b;} .in_progress{background:#3b82f6;} .completed{background:#16a34a;}
+a.download{display:inline-block;margin:6px 6px 0 0;background:#111827;color:#fff;padding:8px 14px;border-radius:6px;text-decoration:none;}
+</style>
+</head>
+<body>
+<h1>Build Status</h1>
+{% if run %}
+<div class="card">
+  <p><strong>Run:</strong> #{{ run.run_number }} — {{ run.name }}</p>
+  <p><strong>Status:</strong> <span class="badge {{ run.status }}">{{ run.status }}</span>
+     {% if run.conclusion %} / {{ run.conclusion }} {% endif %}</p>
+  <p><a href="{{ run.html_url }}" target="_blank">View on GitHub Actions</a></p>
+</div>
+{% else %}
+<p>No builds triggered yet.</p>
+{% endif %}
+
+{% if assets %}
+<div class="card">
+  <h3>Download built apps</h3>
+  {% for a in assets %}
+    <a class="download" href="/save/{{ a.id }}/{{ a.name }}">{{ a.name }}</a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<p><a href="/">← Back to upload</a></p>
+<p style="color:#888;font-size:12px;">This page auto-refreshes every 15 seconds.</p>
+</body>
+</html>
